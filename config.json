@@ -1,0 +1,8 @@
+{
+  "model": "claude-sonnet-5-5",
+  "footer": "@juku_green_age",
+  "size": [1080, 1350],
+  "gradient": ["#0F3D3E", "#1F8A70"],
+  "text_color": "#FFFFFF",
+  "sub_color": "#D9F2E6"
+}
