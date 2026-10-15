@@ -93,7 +93,7 @@ def ask_claude(memo):
     match = re.search(r"\{.*\}", text, re.S)
     if not match:
         sys.exit(f"[エラー] AIの返事を読み取れませんでした: {text}")
-    data = json.loads(match.group(0))
+    data = json.loads(match.group(0), strict=False)
     for key in ("headline", "subtext", "caption"):
         data.setdefault(key, "")
     if not data["headline"].strip() or not data["caption"].strip():
