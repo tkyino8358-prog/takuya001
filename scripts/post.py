@@ -159,8 +159,13 @@ def photo_background(path, width, height):
     """写真を画面いっぱいに敷き、文字が読めるよう暗い膜をかける。"""
     photo = ImageOps.exif_transpose(Image.open(path)).convert("RGB")
     photo = ImageOps.fit(photo, (width, height), method=Image.LANCZOS)
+    # 文字を置く上側は暗く、人物のいる下側は明るく残す
+    top = CONFIG.get("overlay_top", 0.65)
+    bottom = CONFIG.get("overlay_bottom", 0.30)
+    ramp = Image.linear_gradient("L").resize((width, height))
+    mask = ramp.point(lambda v: int(255 * (top + (bottom - top) * v / 255)))
     dark = Image.new("RGB", (width, height), (0, 0, 0))
-    return Image.blend(photo, dark, CONFIG.get("overlay", 0.55))
+    return Image.composite(dark, photo, mask)
 
 
 def gradient_background(width, height):
@@ -187,22 +192,31 @@ def make_image(headline, subtext, out_path):
         img = gradient_background(width, height)
     draw = ImageDraw.Draw(img)
 
+    # 補足
+    sub_font = ImageFont.truetype(font_path, 44)
+    sub_lines = wrap(subtext, sub_font, width - margin * 2) if subtext.strip() else []
+    sub_gap = 66
+    sub_total = 40 + len(sub_lines) * sub_gap if sub_lines else 0
+
+    # 写真のときは文字を上の空いた所に置くので、高さの上限を決める
+    max_block = int(height * 0.27) if photo else None
+
     # 見出し(長いときは文字を小さくして収める)
     size = 120
     while True:
         head_font = ImageFont.truetype(font_path, size)
         head_lines = wrap(headline, head_font, width - margin * 2)
-        if len(head_lines) <= 5 or size <= 56:
+        head_gap = int(size * 1.35)
+        fits = len(head_lines) <= 5 and (max_block is None or len(head_lines) * head_gap + sub_total <= max_block)
+        if fits or size <= 56:
             break
         size -= 6
-    head_gap = int(size * 1.35)
 
-    sub_font = ImageFont.truetype(font_path, 44)
-    sub_lines = wrap(subtext, sub_font, width - margin * 2) if subtext.strip() else []
-    sub_gap = 66
-
-    total = len(head_lines) * head_gap + (40 + len(sub_lines) * sub_gap if sub_lines else 0)
-    y = (height - total) // 2 - 20
+    total = len(head_lines) * head_gap + sub_total
+    if photo:
+        y = int(height * 0.07) + 55  # 上の方から始める(飾り線の分を空ける)
+    else:
+        y = (height - total) // 2 - 20
 
     # 見出しの上の飾り線
     draw.rounded_rectangle([margin, y - 60, margin + 130, y - 48], radius=6, fill=hex_to_rgb(CONFIG["sub_color"]))
