@@ -1,0 +1,77 @@
+name: Instagram自動投稿(ピコ)
+
+on:
+  schedule:
+    # 日本時間の 月・木・土 21:00 (UTCでは 12:00)
+    - cron: "0 12 * * 1,4,6"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "テスト(投稿しない。文章と画像だけ作る)"
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+
+# 3つのアカウントの実行が重ならないよう、順番に動かす(グリーンエイジと同じ名前)
+concurrency: instagram-post
+
+env:
+  DRY_RUN: ${{ github.event.inputs.dry_run == 'true' && '1' || '0' }}
+  ACCOUNT: pico
+
+jobs:
+  post:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: 日本語フォントと部品を入れる
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y fonts-noto-cjk
+          pip install -r requirements.txt
+
+      - name: 文章と画像を作る
+        id: prepare
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: python scripts/post.py prepare ${{ env.ACCOUNT }}
+
+      - name: テスト用に画像を保存する(テストのときだけ)
+        if: steps.prepare.outputs.has_post == 'true' && env.DRY_RUN == '1'
+        uses: actions/upload-artifact@v4
+        with:
+          name: preview
+          path: ${{ steps.prepare.outputs.image_path }}
+
+      - name: 画像をGitHubに置く
+        if: steps.prepare.outputs.has_post == 'true' && env.DRY_RUN != '1'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add images
+          git commit -m "投稿用の画像を追加(${{ env.ACCOUNT }})"
+          git pull --rebase
+          git push
+
+      - name: Instagramに投稿する
+        if: steps.prepare.outputs.has_post == 'true' && env.DRY_RUN != '1'
+        env:
+          IG_ACCESS_TOKEN: ${{ secrets.IG_ACCESS_TOKEN_PICO }}
+          IG_USER_ID: ${{ secrets.IG_USER_ID_PICO }}
+        run: python scripts/post.py publish ${{ env.ACCOUNT }}
+
+      - name: 投稿済みの記録を保存する
+        if: steps.prepare.outputs.has_post == 'true' && env.DRY_RUN != '1'
+        run: |
+          git add accounts/${{ env.ACCOUNT }}/memos.txt accounts/${{ env.ACCOUNT }}/posted.txt
+          git commit -m "投稿済みのお知らせを記録(${{ env.ACCOUNT }})"
+          git pull --rebase
+          git push
