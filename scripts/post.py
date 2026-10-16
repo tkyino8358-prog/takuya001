@@ -7,6 +7,7 @@
 import datetime
 import json
 import os
+import random
 import re
 import subprocess
 import sys
@@ -14,7 +15,7 @@ import time
 from pathlib import Path
 
 import requests
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw, ImageFont, ImageOps
 
 ROOT = Path(__file__).resolve().parent.parent
 CONFIG = json.loads((ROOT / "config.json").read_text(encoding="utf-8"))
@@ -22,6 +23,8 @@ MEMOS = ROOT / "memos.txt"
 POSTED = ROOT / "posted.txt"
 PROFILE = ROOT / "profile.txt"
 IMAGES = ROOT / "images"
+BACKGROUNDS = ROOT / "backgrounds"
+BACKGROUND_EXTS = {".jpg", ".jpeg", ".png", ".webp"}
 STATE = ROOT / "out" / "state.json"
 
 IG_API = "https://graph.instagram.com/v23.0"
@@ -93,6 +96,7 @@ def ask_claude(memo):
     match = re.search(r"\{.*\}", text, re.S)
     if not match:
         sys.exit(f"[エラー] AIの返事を読み取れませんでした: {text}")
+    # 本文の中の改行があっても読めるように strict=False にする
     data = json.loads(match.group(0), strict=False)
     for key in ("headline", "subtext", "caption"):
         data.setdefault(key, "")
@@ -143,18 +147,45 @@ def wrap(text, font, max_width):
     return lines
 
 
-def make_image(headline, subtext, out_path):
-    width, height = CONFIG["size"]
-    margin = 90
-    font_path = find_font_path()
+def pick_background():
+    """backgrounds フォルダの写真から1枚選ぶ。なければ None。"""
+    if not BACKGROUNDS.exists():
+        return None
+    files = sorted(p for p in BACKGROUNDS.iterdir() if p.suffix.lower() in BACKGROUND_EXTS)
+    return random.choice(files) if files else None
 
-    # 背景(上から下へ色が変わる)
+
+def photo_background(path, width, height):
+    """写真を画面いっぱいに敷き、文字が読めるよう暗い膜をかける。"""
+    photo = ImageOps.exif_transpose(Image.open(path)).convert("RGB")
+    photo = ImageOps.fit(photo, (width, height), method=Image.LANCZOS)
+    dark = Image.new("RGB", (width, height), (0, 0, 0))
+    return Image.blend(photo, dark, CONFIG.get("overlay", 0.55))
+
+
+def gradient_background(width, height):
     top, bottom = (hex_to_rgb(c) for c in CONFIG["gradient"])
     img = Image.new("RGB", (width, height))
     draw = ImageDraw.Draw(img)
     for y in range(height):
         t = y / (height - 1)
         draw.line([(0, y), (width, y)], fill=tuple(int(top[i] + (bottom[i] - top[i]) * t) for i in range(3)))
+    return img
+
+
+def make_image(headline, subtext, out_path):
+    width, height = CONFIG["size"]
+    margin = 90
+    font_path = find_font_path()
+
+    # 背景(写真があれば写真、なければ色のグラデーション)
+    photo = pick_background()
+    if photo:
+        print(f"背景の写真: {photo.name}")
+        img = photo_background(photo, width, height)
+    else:
+        img = gradient_background(width, height)
+    draw = ImageDraw.Draw(img)
 
     # 見出し(長いときは文字を小さくして収める)
     size = 120
