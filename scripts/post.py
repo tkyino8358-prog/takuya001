@@ -131,17 +131,19 @@ def ask_claude(memo=None, theme=None):
         },
         json={
             "model": CONFIG["model"],
-            "max_tokens": 1500,
+            "max_tokens": 4000,
             "messages": [{"role": "user", "content": prompt}],
         },
         timeout=120,
     )
     if r.status_code != 200:
         fail("文章づくり(Claude)", r)
-    text = r.json()["content"][0]["text"]
+    body = r.json()
+    # 返事は「考えた過程」と「本文」に分かれることがあるので、本文(text)だけを集める
+    text = "".join(block.get("text", "") for block in body.get("content", []) if block.get("type") == "text")
     match = re.search(r"\{.*\}", text, re.S)
     if not match:
-        sys.exit(f"[エラー] AIの返事を読み取れませんでした: {text}")
+        sys.exit(f"[エラー] AIの返事を読み取れませんでした: stop_reason={body.get('stop_reason')} / {text or body}")
     # 本文の中の改行があっても読めるように strict=False にする
     data = json.loads(match.group(0), strict=False)
     for key in ("headline", "subtext", "caption"):
