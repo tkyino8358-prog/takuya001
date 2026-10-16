@@ -1,8 +1,12 @@
 """Instagram自動投稿: メモ -> 文章と画像を作る -> 投稿する
 
 使い方:
-  python scripts/post.py prepare   # メモを1つ選び、文章と画像を作る
-  python scripts/post.py publish   # 作った画像と文章をInstagramに投稿する
+  python scripts/post.py prepare [アカウント名]   # メモを1つ選び、文章と画像を作る
+  python scripts/post.py publish [アカウント名]   # 作った画像と文章をInstagramに投稿する
+
+アカウント名を省いたときは green(学習塾グリーンエイジ)です。
+green は、フォルダの直下のファイルを使います。
+それ以外(pico, mamma など)は、accounts/アカウント名/ の中のファイルを使います。
 """
 import datetime
 import json
@@ -18,13 +22,20 @@ import requests
 from PIL import Image, ImageDraw, ImageFont, ImageOps
 
 ROOT = Path(__file__).resolve().parent.parent
-CONFIG = json.loads((ROOT / "config.json").read_text(encoding="utf-8"))
-MEMOS = ROOT / "memos.txt"
-POSTED = ROOT / "posted.txt"
-PROFILE = ROOT / "profile.txt"
-THEMES = ROOT / "themes.txt"
-IMAGES = ROOT / "images"
-BACKGROUNDS = ROOT / "backgrounds"
+ACCOUNT = sys.argv[2] if len(sys.argv) > 2 else "green"
+if not re.fullmatch(r"[a-z0-9_-]+", ACCOUNT):
+    sys.exit(f"[エラー] アカウント名が正しくありません: {ACCOUNT}")
+# green は今までどおり直下のファイル。ほかは accounts/アカウント名/ の中のファイルを使う
+BASE = ROOT if ACCOUNT == "green" else ROOT / "accounts" / ACCOUNT
+if not (BASE / "config.json").exists():
+    sys.exit(f"[エラー] {BASE} に config.json がありません。アカウント名を確認してください: {ACCOUNT}")
+CONFIG = json.loads((BASE / "config.json").read_text(encoding="utf-8"))
+MEMOS = BASE / "memos.txt"
+POSTED = BASE / "posted.txt"
+PROFILE = BASE / "profile.txt"
+THEMES = BASE / "themes.txt"
+IMAGES_DIR = "images" if ACCOUNT == "green" else f"images/{ACCOUNT}"
+BACKGROUNDS = BASE / "backgrounds"
 BACKGROUND_EXTS = {".jpg", ".jpeg", ".png", ".webp"}
 STATE = ROOT / "out" / "state.json"
 
@@ -94,16 +105,19 @@ def next_theme():
 # ---------- 2. 文章を作る(Claude) ----------
 def ask_claude(memo=None, theme=None):
     profile = PROFILE.read_text(encoding="utf-8")
+    closing = CONFIG.get("closing", "ご相談はお気軽にどうぞ")
     if memo:
         task = f"""次の「お知らせのメモ」から、投稿を作ってください。メモに書かれていない情報は、作らないでください。
+ただし、「アカウント情報」の【使ってよい事実】に書かれている内容は、使えます。
 
 # お知らせのメモ
 {memo}"""
     else:
-        task = f"""次の「テーマ」について、保護者や生徒の役に立つ、一般的な内容の投稿を作ってください。
-- 日付、時刻、料金、定員、合格率などの実績、特典、教室の具体的なサービス内容や講座名は、書かないでください。
+        task = f"""次の「テーマ」について、読む人の役に立つ、一般的な内容の投稿を作ってください。
+- 日付、時刻、料金、定員、合格率などの実績、特典、教室やお店の具体的なサービス内容や講座名は、書かないでください。
+  ただし、「アカウント情報」の【使ってよい事実】に書かれている内容だけは、そのまま使えます。
 - 断定しすぎる表現や、不安をあおる表現は、避けてください。
-- 最後は、押しつけにならない一言(例: ご相談はお気軽にどうぞ)で締めてください。
+- 最後は、押しつけにならない一言(例: {closing})で締めてください。
 
 # テーマ
 {theme}"""
@@ -312,7 +326,7 @@ def prepare():
 
     data = ask_claude(memo=memo, theme=theme)
     name = now_jst().strftime("%Y%m%d-%H%M%S") + ".jpg"
-    image_rel = f"images/{name}"
+    image_rel = f"{IMAGES_DIR}/{name}"
     make_image(data["headline"], data["subtext"], ROOT / image_rel)
 
     STATE.parent.mkdir(parents=True, exist_ok=True)
@@ -407,6 +421,6 @@ def publish():
 
 
 if __name__ == "__main__":
-    if len(sys.argv) != 2 or sys.argv[1] not in ("prepare", "publish"):
+    if len(sys.argv) not in (2, 3) or sys.argv[1] not in ("prepare", "publish"):
         sys.exit(__doc__)
     {"prepare": prepare, "publish": publish}[sys.argv[1]]()
