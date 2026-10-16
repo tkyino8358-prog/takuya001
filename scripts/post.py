@@ -22,6 +22,7 @@ CONFIG = json.loads((ROOT / "config.json").read_text(encoding="utf-8"))
 MEMOS = ROOT / "memos.txt"
 POSTED = ROOT / "posted.txt"
 PROFILE = ROOT / "profile.txt"
+THEMES = ROOT / "themes.txt"
 IMAGES = ROOT / "images"
 BACKGROUNDS = ROOT / "backgrounds"
 BACKGROUND_EXTS = {".jpg", ".jpeg", ".png", ".webp"}
@@ -58,17 +59,62 @@ def next_memo():
     return None
 
 
+def last_post_kind():
+    """前回の投稿が、メモ(memo)だったか、テーマ(theme)だったか。まだなければ None。"""
+    if not POSTED.exists():
+        return None
+    records = [
+        line for line in POSTED.read_text(encoding="utf-8").splitlines()
+        if line.strip() and not line.strip().startswith("#")
+    ]
+    if not records:
+        return None
+    return "theme" if "テーマ: " in records[-1] else "memo"
+
+
+def next_theme():
+    """メモがないときに使うテーマを選ぶ。いちばん長く使っていないものを選ぶ。"""
+    if not CONFIG.get("use_themes", True) or not THEMES.exists():
+        return None
+    themes = [
+        line.strip() for line in THEMES.read_text(encoding="utf-8").splitlines()
+        if line.strip() and not line.strip().startswith("#")
+    ]
+    if not themes:
+        return None
+    history = POSTED.read_text(encoding="utf-8").splitlines() if POSTED.exists() else []
+    last_used = {}
+    for index, line in enumerate(history):
+        for theme in themes:
+            if f"テーマ: {theme}" in line:
+                last_used[theme] = index
+    return min(themes, key=lambda t: last_used.get(t, -1))
+
+
 # ---------- 2. 文章を作る(Claude) ----------
-def ask_claude(memo):
+def ask_claude(memo=None, theme=None):
     profile = PROFILE.read_text(encoding="utf-8")
+    if memo:
+        task = f"""次の「お知らせのメモ」から、投稿を作ってください。メモに書かれていない情報は、作らないでください。
+
+# お知らせのメモ
+{memo}"""
+    else:
+        task = f"""次の「テーマ」について、保護者や生徒の役に立つ、一般的な内容の投稿を作ってください。
+- 日付、時刻、料金、定員、合格率などの実績、特典、教室の具体的なサービス内容や講座名は、書かないでください。
+- 断定しすぎる表現や、不安をあおる表現は、避けてください。
+- 最後は、押しつけにならない一言(例: ご相談はお気軽にどうぞ)で締めてください。
+
+# テーマ
+{theme}"""
     prompt = f"""あなたはInstagramの投稿を作る担当です。
-次の「アカウント情報」と「お知らせのメモ」から、投稿を作ってください。
+次の「アカウント情報」と「指示」にもとづいて、投稿を作ってください。
 
 # アカウント情報
 {profile}
 
-# お知らせのメモ
-{memo}
+# 指示
+{task}
 
 # 出力
 次の3つの項目だけを持つJSONで答えてください。説明や```は付けないでください。
@@ -244,20 +290,35 @@ def make_image(headline, subtext, out_path):
 # ---------- prepare ----------
 def prepare():
     memo = next_memo()
-    if memo is None:
-        print("投稿するメモがありません。memos.txt にお知らせを書き足してください。")
+    theme = next_theme()
+
+    # 前回がメモなら、今回はテーマ(1回おき)。どちらかがなければ、あるほうを使う
+    want_theme = CONFIG.get("alternate", True) and last_post_kind() == "memo"
+    if want_theme and theme:
+        memo = None
+    elif memo:
+        theme = None
+    elif not theme:
+        print("投稿するメモもテーマもありません。memos.txt か themes.txt に書き足してください。")
         set_output("has_post", "false")
         return
-    print(f"メモ: {memo}")
 
-    data = ask_claude(memo)
+    if memo:
+        print(f"メモ: {memo}")
+    else:
+        print(f"テーマで作ります: {theme}")
+
+    data = ask_claude(memo=memo, theme=theme)
     name = now_jst().strftime("%Y%m%d-%H%M%S") + ".jpg"
     image_rel = f"images/{name}"
     make_image(data["headline"], data["subtext"], ROOT / image_rel)
 
     STATE.parent.mkdir(parents=True, exist_ok=True)
     STATE.write_text(
-        json.dumps({"memo": memo, "caption": data["caption"], "image": image_rel}, ensure_ascii=False, indent=2),
+        json.dumps(
+            {"memo": memo, "theme": theme, "caption": data["caption"], "image": image_rel},
+            ensure_ascii=False, indent=2,
+        ),
         encoding="utf-8",
     )
     print(f"見出し: {data['headline']}")
@@ -327,15 +388,20 @@ def publish():
         fail("公開", r)
     print(f"投稿しました: {r.json()}")
 
-    # 使ったメモを、memos.txt から posted.txt へ移す
-    lines = MEMOS.read_text(encoding="utf-8").splitlines()
-    for i, line in enumerate(lines):
-        if line.strip() == state["memo"]:
-            del lines[i]
-            break
-    MEMOS.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    if state.get("memo"):
+        # 使ったメモを、memos.txt から posted.txt へ移す
+        lines = MEMOS.read_text(encoding="utf-8").splitlines()
+        for i, line in enumerate(lines):
+            if line.strip() == state["memo"]:
+                del lines[i]
+                break
+        MEMOS.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        record = state["memo"]
+    else:
+        # テーマで作ったときは、使ったテーマだけを記録する(次は別のテーマになる)
+        record = f"テーマ: {state['theme']}"
     with POSTED.open("a", encoding="utf-8") as f:
-        f.write(f"{now_jst():%Y-%m-%d %H:%M} | {state['memo']}\n")
+        f.write(f"{now_jst():%Y-%m-%d %H:%M} | {record}\n")
 
 
 if __name__ == "__main__":
