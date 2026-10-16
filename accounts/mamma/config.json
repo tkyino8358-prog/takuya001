@@ -1,0 +1,13 @@
+{
+  "model": "claude-sonnet-5-5",
+  "footer": "@quick_wash_takasaki",
+  "closing": "ぜひお気軽にお立ち寄りください",
+  "size": [1080, 1350],
+  "gradient": ["#14532D", "#16A34A"],
+  "use_themes": true,
+  "alternate": true,
+  "overlay_top": 0.65,
+  "overlay_bottom": 0.30,
+  "text_color": "#FFFFFF",
+  "sub_color": "#E8FBEA"
+}
