@@ -1,6 +1,6 @@
 {
   "model": "claude-sonnet-5-5",
-  "footer": "@quick_wash_takasaki",
+  "footer": "マンマチャオ貝沢町店",
   "closing": "ぜひお気軽にお立ち寄りください",
   "size": [1080, 1350],
   "gradient": ["#14532D", "#16A34A"],
