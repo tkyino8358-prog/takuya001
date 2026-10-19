@@ -1,0 +1,27 @@
+name: 投稿ネタの残りチェック(秘書)
+
+on:
+  schedule:
+    # 日本時間の 毎週月曜 9:00 (UTCでは 月曜 0:00)
+    - cron: "0 0 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: ネタの残りを数えて、足りなければIssueで知らせる
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python scripts/stock_check.py --issue
