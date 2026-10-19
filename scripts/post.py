@@ -292,12 +292,17 @@ def make_image(headline, subtext, out_path):
             draw.text((margin, y), line, font=sub_font, fill=hex_to_rgb(CONFIG["sub_color"]))
             y += sub_gap
 
-    # 下のアカウント名
+    # 下の店舗名(文字ひとつなら1行、リストなら複数行。いちばん下の行の位置は同じ)
     foot_font = ImageFont.truetype(font_path, 38)
     foot = CONFIG.get("footer", "")
-    if foot:
-        w = foot_font.getlength(foot)
-        draw.text(((width - w) / 2, height - 120), foot, font=foot_font, fill=hex_to_rgb(CONFIG["sub_color"]))
+    foot_lines = [foot] if isinstance(foot, str) else list(foot)
+    foot_gap = 52
+    for i, line in enumerate(foot_lines):
+        if not line:
+            continue
+        w = foot_font.getlength(line)
+        y = height - 120 - foot_gap * (len(foot_lines) - 1 - i)
+        draw.text(((width - w) / 2, y), line, font=foot_font, fill=hex_to_rgb(CONFIG["sub_color"]))
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     img.save(out_path, "JPEG", quality=92)
