@@ -6,6 +6,7 @@
   "gradient": ["#14532D", "#16A34A"],
   "use_themes": true,
   "alternate": true,
+  "google_post": true,
   "overlay_top": 0.65,
   "overlay_bottom": 0.30,
   "text_color": "#FFFFFF",

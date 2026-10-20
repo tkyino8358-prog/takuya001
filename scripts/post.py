@@ -21,6 +21,8 @@ from pathlib import Path
 import requests
 from PIL import Image, ImageDraw, ImageFont, ImageOps
 
+import cards  # 型(テンプレート)から画像を描く。config.json に "image_mode": "cards" があるアカウント用
+
 ROOT = Path(__file__).resolve().parent.parent
 ACCOUNT = sys.argv[2] if len(sys.argv) > 2 else "green"
 if not re.fullmatch(r"[a-z0-9_-]+", ACCOUNT):
@@ -40,6 +42,10 @@ BACKGROUND_EXTS = {".jpg", ".jpeg", ".png", ".webp"}
 STATE = ROOT / "out" / "state.json"
 
 IG_API = "https://graph.instagram.com/v23.0"
+# Googleビジネスプロフィール(config.json に "google_post": true があるアカウントだけ)
+GBP_API = "https://mybusiness.googleapis.com/v4"
+GBP_KEYS = ("GBP_CLIENT_ID", "GBP_CLIENT_SECRET", "GBP_REFRESH_TOKEN", "GBP_ACCOUNT_ID", "GBP_LOCATION_ID")
+GBP_SIZE = (1200, 900)  # Googleの投稿は横長(4:3)が見やすい
 JST = datetime.timezone(datetime.timedelta(hours=9))
 NO_LINE_START = "。、，．,.!?！？」』）)ー"
 
@@ -103,6 +109,41 @@ def next_theme():
 
 
 # ---------- 2. 文章を作る(Claude) ----------
+CARDS_MODE = CONFIG.get("image_mode") == "cards"
+
+TEXT_OUTPUT_RULE = """# 出力
+次の3つの項目だけを持つJSONで答えてください。説明や```は付けないでください。
+- headline: 画像に大きく載せる見出し。全角16文字くらいまで。長いときは \\n で改行する。
+- subtext: 画像に小さく載せる補足。全角30文字くらいまで。不要なら空文字。
+- caption: Instagramの本文。150〜300文字。読みやすく改行を使う。最後に関連するハッシュタグを3〜5個。
+"""
+
+CARDS_OUTPUT_RULE = """# 出力
+次の2つの項目だけを持つJSONで答えてください。説明や```は付けないでください。
+- image: 画像の指定(下の「画像の型」を参照)
+- caption: Instagramの本文。150〜300文字。読みやすく改行を使う。最後に関連するハッシュタグを3〜5個。
+
+# 画像の型
+image は、次の3つのどれかの形にする。投稿の内容に合う型を選ぶ。
+1. 番号つきカード(手順・コツ・ポイントを並べるとき)
+{"template":"list","color":"purple","title":"見出し","items":["1つ目","2つ目","3つ目"],"note":"下の一言(省略可)"}
+ - items は2〜4個(3個が基本)。1つは全角18文字以内。
+2. 左右の比較(良くない例と良い例、AとBの違いなど)
+{"template":"compare","color":"pink","title":"見出し","mark":true,"left":{"text":"左の文"},"right":{"text":"右の文"},"note":"下の一言"}
+ - mark が true のときは、左に✕、右に○が付く。left と right は text だけ。
+ - mark が false のときは、left と right に "label"(全角10文字以内の小見出し)も付ける。
+ - 左右の文は、全角8文字くらいごとに \\n で改行してよい。
+3. 表(学年別の目安など)
+{"template":"table","color":"blue","title":"見出し","columns":["列1","列2"],"rows":[["a","b"]],"note":"補足(省略可)"}
+ - rows は9行まで。
+共通:
+ - color は orange, purple, green, pink, blue, yellow から、内容に合うものを選ぶ。
+ - title は全角16文字くらいまで。長いときは \\n で改行する。文の途中では改行しない。
+ - 画像の文字は短くする。「？」「！」は全角を使う。
+ - 画像の内容と caption は、同じ話にする。
+"""
+
+
 def ask_claude(memo=None, theme=None):
     profile = PROFILE.read_text(encoding="utf-8")
     closing = CONFIG.get("closing", "ご相談はお気軽にどうぞ")
@@ -130,12 +171,7 @@ def ask_claude(memo=None, theme=None):
 # 指示
 {task}
 
-# 出力
-次の3つの項目だけを持つJSONで答えてください。説明や```は付けないでください。
-- headline: 画像に大きく載せる見出し。全角16文字くらいまで。長いときは \\n で改行する。
-- subtext: 画像に小さく載せる補足。全角30文字くらいまで。不要なら空文字。
-- caption: Instagramの本文。150〜300文字。読みやすく改行を使う。最後に関連するハッシュタグを3〜5個。
-"""
+{CARDS_OUTPUT_RULE if CARDS_MODE else TEXT_OUTPUT_RULE}"""
     r = requests.post(
         "https://api.anthropic.com/v1/messages",
         headers={
@@ -160,6 +196,14 @@ def ask_claude(memo=None, theme=None):
         sys.exit(f"[エラー] AIの返事を読み取れませんでした: stop_reason={body.get('stop_reason')} / {text or body}")
     # 本文の中の改行があっても読めるように strict=False にする
     data = json.loads(match.group(0), strict=False)
+    if CARDS_MODE:
+        try:
+            cards.validate_spec(data.get("image"))
+        except ValueError as e:
+            sys.exit(f"[エラー] 画像の指定が正しくありませんでした({e}): {data}")
+        if not str(data.get("caption", "")).strip():
+            sys.exit(f"[エラー] 本文が空でした: {data}")
+        return data
     for key in ("headline", "subtext", "caption"):
         data.setdefault(key, "")
     if not data["headline"].strip() or not data["caption"].strip():
@@ -240,13 +284,13 @@ def gradient_background(width, height):
     return img
 
 
-def make_image(headline, subtext, out_path):
-    width, height = CONFIG["size"]
+def make_image(headline, subtext, out_path, size=None, photo=None):
+    """size を省くと config.json の大きさ。photo は背景の写真(なければ色のグラデーション)。"""
+    width, height = size or CONFIG["size"]
     margin = 90
     font_path = find_font_path()
 
     # 背景(写真があれば写真、なければ色のグラデーション)
-    photo = pick_background()
     if photo:
         print(f"背景の写真: {photo.name}")
         img = photo_background(photo, width, height)
@@ -332,22 +376,43 @@ def prepare():
     data = ask_claude(memo=memo, theme=theme)
     name = now_jst().strftime("%Y%m%d-%H%M%S") + ".jpg"
     image_rel = f"{IMAGES_DIR}/{name}"
-    make_image(data["headline"], data["subtext"], ROOT / image_rel)
+    photo = None
+    if CARDS_MODE:
+        cards.render(data["image"], ROOT / image_rel)
+    else:
+        photo = pick_background()
+        make_image(data["headline"], data["subtext"], ROOT / image_rel, photo=photo)
+
+    # Google用の横長の画像(同じ背景写真を使う)
+    google_rel = None
+    if CONFIG.get("google_post") and not CARDS_MODE:
+        google_rel = f"{IMAGES_DIR}/{name[:-4]}-google.jpg"
+        make_image(data["headline"], data["subtext"], ROOT / google_rel, size=GBP_SIZE, photo=photo)
 
     STATE.parent.mkdir(parents=True, exist_ok=True)
     STATE.write_text(
         json.dumps(
-            {"memo": memo, "theme": theme, "caption": data["caption"], "image": image_rel},
+            {
+                "memo": memo, "theme": theme, "caption": data["caption"],
+                "image": image_rel, "google_image": google_rel,
+            },
             ensure_ascii=False, indent=2,
         ),
         encoding="utf-8",
     )
-    print(f"見出し: {data['headline']}")
-    print(f"補足: {data['subtext']}")
+    if CARDS_MODE:
+        print(f"画像の型: {data['image']['template']} / 色: {data['image']['color']}")
+        print(f"見出し: {data['image']['title']}")
+    else:
+        print(f"見出し: {data['headline']}")
+        print(f"補足: {data['subtext']}")
     print(f"本文:\n{data['caption']}")
     print(f"画像: {image_rel}")
+    if google_rel:
+        print(f"Google用の画像: {google_rel}")
     set_output("has_post", "true")
     set_output("image_path", image_rel)
+    set_output("google_image_path", google_rel or "")
 
 
 # ---------- publish ----------
@@ -359,6 +424,67 @@ def wait_for_image(url):
             return
         time.sleep(5)
     sys.exit(f"[エラー] 画像の公開URLが開けませんでした: {url}")
+
+
+def google_summary(caption):
+    """Instagramの本文から、Google用の文章を作る(ハッシュタグは外し、1500文字までにする)。"""
+    lines = [re.sub(r"\s*#\S+", "", line).rstrip() for line in caption.splitlines()]
+    text = re.sub(r"\n{3,}", "\n\n", "\n".join(lines)).strip()
+    return text[:1500]
+
+
+def publish_google(state):
+    """同じ内容を、Googleビジネスプロフィールにも投稿する。
+
+    鍵(GBP_...)が登録されていないときは、何もしない。
+    失敗しても止めない(Instagramに投稿したメモの記録を、必ず残すため)。
+    """
+    if not CONFIG.get("google_post") or not state.get("google_image"):
+        return
+    if any(not os.environ.get(key) for key in GBP_KEYS):
+        print("Googleビジネスプロフィール: 鍵が未登録のため、投稿しませんでした。")
+        return
+    try:
+        # (1) 登録してある鍵から、今日使う通行証を受け取る
+        r = requests.post(
+            "https://oauth2.googleapis.com/token",
+            data={
+                "client_id": os.environ["GBP_CLIENT_ID"],
+                "client_secret": os.environ["GBP_CLIENT_SECRET"],
+                "refresh_token": os.environ["GBP_REFRESH_TOKEN"],
+                "grant_type": "refresh_token",
+            },
+            timeout=30,
+        )
+        if r.status_code != 200:
+            raise RuntimeError(f"Googleの認証: {r.status_code} {r.text}")
+        access_token = r.json()["access_token"]
+
+        # (2) 画像の公開URLが見えるのを待つ
+        repo = os.environ["GITHUB_REPOSITORY"]
+        branch = os.environ.get("GITHUB_REF_NAME", "main")
+        image_url = f"https://raw.githubusercontent.com/{repo}/{branch}/{state['google_image']}"
+        wait_for_image(image_url)
+
+        # (3) 投稿する
+        place = f"accounts/{os.environ['GBP_ACCOUNT_ID']}/locations/{os.environ['GBP_LOCATION_ID']}"
+        r = requests.post(
+            f"{GBP_API}/{place}/localPosts",
+            headers={"Authorization": f"Bearer {access_token}"},
+            json={
+                "languageCode": "ja",
+                "topicType": "STANDARD",
+                "summary": google_summary(state["caption"]),
+                "media": [{"mediaFormat": "PHOTO", "sourceUrl": image_url}],
+            },
+            timeout=60,
+        )
+        if r.status_code != 200:
+            raise RuntimeError(f"Googleへの投稿: {r.status_code} {r.text}")
+        print(f"Googleビジネスプロフィールに投稿しました: {r.json().get('name')}")
+    except (requests.RequestException, RuntimeError, KeyError, SystemExit) as e:
+        # 画面の目立つ所に警告を出す(Instagramの投稿は成功しているので、処理は続ける)
+        print(f"::warning::Googleビジネスプロフィールへの投稿に失敗しました: {e}")
 
 
 def publish():
@@ -423,6 +549,9 @@ def publish():
         record = f"テーマ: {state['theme']}"
     with POSTED.open("a", encoding="utf-8") as f:
         f.write(f"{now_jst():%Y-%m-%d %H:%M} | {record}\n")
+
+    # Instagramの記録を残したあとで、Googleにも投稿する(失敗しても記録は残る)
+    publish_google(state)
 
 
 if __name__ == "__main__":

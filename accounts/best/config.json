@@ -1,0 +1,7 @@
+{
+  "model": "claude-sonnet-5-5",
+  "image_mode": "cards",
+  "closing": "気になったら、できそうなものから試してみてください",
+  "use_themes": true,
+  "alternate": false
+}
