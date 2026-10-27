@@ -286,10 +286,12 @@ def gradient_background(width, height):
 
 
 def make_image(headline, subtext, out_path, size=None, photo=None, top_frac=0.07, foot_bottom=120,
-               overlay=None, shadow=False):
+               overlay=None, shadow=None):
     """size を省くと config.json の大きさ。photo は背景の写真(なければ色のグラデーション)。
     top_frac は文字を置き始める高さ(画面の上から何割か)、foot_bottom は店舗名の下の余白。
-    overlay は暗い膜の濃さ (上, 下)、shadow を True にすると文字に影を付ける。"""
+    overlay は暗い膜の濃さ (上, 下)、shadow を True にすると文字に影を付ける(省くと config.json の text_shadow)。"""
+    if shadow is None:
+        shadow = CONFIG.get("text_shadow", False)
     width, height = size or CONFIG["size"]
     margin = 90
     font_path = find_font_path()

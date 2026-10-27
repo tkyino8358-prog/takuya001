@@ -6,8 +6,9 @@
   "gradient": ["#B45309", "#F59E0B"],
   "use_themes": true,
   "alternate": true,
-  "overlay_top": 0.65,
-  "overlay_bottom": 0.30,
+  "overlay_top": 0.15,
+  "overlay_bottom": 0.0,
+  "text_shadow": true,
   "text_color": "#FFFFFF",
   "sub_color": "#FFF3D6"
 }
