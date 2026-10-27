@@ -10,6 +10,10 @@ on:
         description: "テスト(投稿しない。文章と画像だけ作る)"
         type: boolean
         default: true
+      reel:
+        description: "リール動画にする(曜日に関係なく、動画を作って投稿する)"
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -19,6 +23,7 @@ concurrency: instagram-post
 
 env:
   DRY_RUN: ${{ github.event.inputs.dry_run == 'true' && '1' || '0' }}
+  FORCE_REEL: ${{ github.event.inputs.reel == 'true' && '1' || '0' }}
   ACCOUNT: mamma
 
 jobs:
@@ -52,6 +57,7 @@ jobs:
           path: |
             ${{ steps.prepare.outputs.image_path }}
             ${{ steps.prepare.outputs.google_image_path }}
+            ${{ steps.prepare.outputs.video_path }}
 
       - name: 画像をGitHubに置く
         if: steps.prepare.outputs.has_post == 'true' && env.DRY_RUN != '1'

@@ -13,8 +13,10 @@ import json
 import os
 import random
 import re
+import shutil
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -261,13 +263,12 @@ def pick_background():
     return random.choice(files) if files else None
 
 
-def photo_background(path, width, height):
-    """写真を画面いっぱいに敷き、文字が読めるよう暗い膜をかける。"""
+def photo_background(path, width, height, overlay=None):
+    """写真を画面いっぱいに敷き、文字が読めるよう暗い膜をかける。overlay は (上の濃さ, 下の濃さ)。"""
     photo = ImageOps.exif_transpose(Image.open(path)).convert("RGB")
     photo = ImageOps.fit(photo, (width, height), method=Image.LANCZOS)
     # 文字を置く上側は暗く、人物のいる下側は明るく残す
-    top = CONFIG.get("overlay_top", 0.65)
-    bottom = CONFIG.get("overlay_bottom", 0.30)
+    top, bottom = overlay or (CONFIG.get("overlay_top", 0.65), CONFIG.get("overlay_bottom", 0.30))
     ramp = Image.linear_gradient("L").resize((width, height))
     mask = ramp.point(lambda v: int(255 * (top + (bottom - top) * v / 255)))
     dark = Image.new("RGB", (width, height), (0, 0, 0))
@@ -284,8 +285,11 @@ def gradient_background(width, height):
     return img
 
 
-def make_image(headline, subtext, out_path, size=None, photo=None):
-    """size を省くと config.json の大きさ。photo は背景の写真(なければ色のグラデーション)。"""
+def make_image(headline, subtext, out_path, size=None, photo=None, top_frac=0.07, foot_bottom=120,
+               overlay=None, shadow=False):
+    """size を省くと config.json の大きさ。photo は背景の写真(なければ色のグラデーション)。
+    top_frac は文字を置き始める高さ(画面の上から何割か)、foot_bottom は店舗名の下の余白。
+    overlay は暗い膜の濃さ (上, 下)、shadow を True にすると文字に影を付ける。"""
     width, height = size or CONFIG["size"]
     margin = 90
     font_path = find_font_path()
@@ -293,10 +297,15 @@ def make_image(headline, subtext, out_path, size=None, photo=None):
     # 背景(写真があれば写真、なければ色のグラデーション)
     if photo:
         print(f"背景の写真: {photo.name}")
-        img = photo_background(photo, width, height)
+        img = photo_background(photo, width, height, overlay)
     else:
         img = gradient_background(width, height)
     draw = ImageDraw.Draw(img)
+
+    def put(xy, text, font, fill):
+        if shadow:  # 明るい写真でも読めるよう、少しずらした黒い影を先に描く
+            draw.text((xy[0] + 3, xy[1] + 3), text, font=font, fill=(0, 0, 0))
+        draw.text(xy, text, font=font, fill=fill)
 
     # 補足
     sub_font = ImageFont.truetype(font_path, 44)
@@ -320,7 +329,7 @@ def make_image(headline, subtext, out_path, size=None, photo=None):
 
     total = len(head_lines) * head_gap + sub_total
     if photo:
-        y = int(height * 0.07) + 55  # 上の方から始める(飾り線の分を空ける)
+        y = int(height * top_frac) + 55  # 上の方から始める(飾り線の分を空ける)
     else:
         y = (height - total) // 2 - 20
 
@@ -328,12 +337,12 @@ def make_image(headline, subtext, out_path, size=None, photo=None):
     draw.rounded_rectangle([margin, y - 60, margin + 130, y - 48], radius=6, fill=hex_to_rgb(CONFIG["sub_color"]))
 
     for line in head_lines:
-        draw.text((margin, y), line, font=head_font, fill=hex_to_rgb(CONFIG["text_color"]))
+        put((margin, y), line, head_font, hex_to_rgb(CONFIG["text_color"]))
         y += head_gap
     if sub_lines:
         y += 40
         for line in sub_lines:
-            draw.text((margin, y), line, font=sub_font, fill=hex_to_rgb(CONFIG["sub_color"]))
+            put((margin, y), line, sub_font, hex_to_rgb(CONFIG["sub_color"]))
             y += sub_gap
 
     # 下の店舗名(文字ひとつなら1行、リストなら複数行。いちばん下の行の位置は同じ)
@@ -345,11 +354,89 @@ def make_image(headline, subtext, out_path, size=None, photo=None):
         if not line:
             continue
         w = foot_font.getlength(line)
-        y = height - 120 - foot_gap * (len(foot_lines) - 1 - i)
-        draw.text(((width - w) / 2, y), line, font=foot_font, fill=hex_to_rgb(CONFIG["sub_color"]))
+        y = height - foot_bottom - foot_gap * (len(foot_lines) - 1 - i)
+        put(((width - w) / 2, y), line, foot_font, hex_to_rgb(CONFIG["sub_color"]))
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     img.save(out_path, "JPEG", quality=92)
+
+
+# ---------- リール動画 ----------
+REEL_SIZE = (1080, 1920)
+REEL_SCENE_SECONDS = 4.5  # 1場面の長さ(2場面をつなぐので、全体で約8.4秒)
+REEL_FADE_SECONDS = 0.6
+
+
+def is_reel_day():
+    """config.json の reel_weekdays(0=月 ... 6=日、日本時間)にある曜日か。FORCE_REEL=1 のときは必ず True。"""
+    if CARDS_MODE:
+        return False
+    if os.environ.get("FORCE_REEL") == "1":
+        return True
+    return now_jst().weekday() in CONFIG.get("reel_weekdays", [])
+
+
+MUSIC_EXTS = {".mp3", ".m4a", ".wav", ".aac", ".ogg"}
+
+
+def pick_music():
+    """music フォルダの音楽から1曲選ぶ。なければ None(そのときは無音の動画になる)。"""
+    folder = BASE / "music"
+    if not folder.exists():
+        return None
+    files = sorted(p for p in folder.iterdir() if p.suffix.lower() in MUSIC_EXTS)
+    return random.choice(files) if files else None
+
+
+def make_reel(headline, subtext, out_path, photo=None, music=None):
+    """見出しだけの場面 -> 見出しと補足の場面、の2場面をゆっくりズームしてつなぎ、縦長のmp4にする。
+    music は音楽ファイル(省くと music フォルダから選ぶ。なければ無音)。"""
+    ffmpeg = os.environ.get("FFMPEG") or shutil.which("ffmpeg")
+    if not ffmpeg:
+        raise RuntimeError("ffmpeg が見つかりません")
+    music = music or pick_music()
+    # リールは上下をInstagramの表示が隠すので、文字は少し内側に置く
+    overlay = tuple(CONFIG.get("reel_overlay", (0.40, 0.05)))  # 静止画より薄い(明るい)
+    layout = {"size": REEL_SIZE, "photo": photo, "top_frac": 0.13, "foot_bottom": 430,
+              "overlay": overlay, "shadow": True}
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory() as tmp:
+        frame1, frame2 = Path(tmp) / "scene1.jpg", Path(tmp) / "scene2.jpg"
+        make_image(headline, "", frame1, **layout)
+        make_image(headline, subtext, frame2, **layout)
+
+        frames = int(REEL_SCENE_SECONDS * 30)
+        offset = REEL_SCENE_SECONDS - REEL_FADE_SECONDS
+        zoom = (
+            f"scale=1620:2880,zoompan=z='min(1+0.0007*on,1.1)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'"
+            f":d={frames}:s={REEL_SIZE[0]}x{REEL_SIZE[1]}:fps=30,setsar=1,format=yuv420p"
+        )
+        graph = (
+            f"[0:v]{zoom}[a];[1:v]{zoom}[b];"
+            f"[a][b]xfade=transition=fade:duration={REEL_FADE_SECONDS}:offset={offset},scale=in_range=pc:out_range=tv,format=yuv420p[v]"
+        )
+        total = REEL_SCENE_SECONDS * 2 - REEL_FADE_SECONDS
+        if music:
+            print(f"音楽: {music.name}")
+            # 音楽を動画の長さに合わせ、最初と最後をなめらかにする。音量は控えめ(声や効果音がないので0.6倍)
+            audio_in = ["-stream_loop", "-1", "-i", str(music)]
+            graph += f";[2:a]volume=0.6,afade=t=in:d=0.5,afade=t=out:st={total - 1.5:.2f}:d=1.5,aformat=sample_rates=44100:channel_layouts=stereo[a]"
+        else:
+            # 音のない動画だと受け付けないことがあるので、無音を付ける
+            audio_in = ["-f", "lavfi", "-i", "anullsrc=r=44100:cl=stereo"]
+        audio_map = "[a]" if music else "2:a"
+        cmd = [
+            ffmpeg, "-y", "-loglevel", "error",
+            "-i", str(frame1), "-i", str(frame2), *audio_in,
+            "-filter_complex", graph, "-map", "[v]", "-map", audio_map,
+            "-t", f"{total:.2f}",
+            "-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf", "26", "-preset", "medium", "-r", "30",
+            "-c:a", "aac", "-b:a", "64k", "-movflags", "+faststart",
+            str(out_path),
+        ]
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+        if r.returncode != 0:
+            raise RuntimeError(f"動画を作れませんでした: {r.stderr[-500:]}")
 
 
 # ---------- prepare ----------
@@ -389,12 +476,22 @@ def prepare():
         google_rel = f"{IMAGES_DIR}/{name[:-4]}-google.jpg"
         make_image(data["headline"], data["subtext"], ROOT / google_rel, size=GBP_SIZE, photo=photo)
 
+    # リールの日は、動画も作る。作れなくても、静止画で投稿できるよう処理は続ける
+    video_rel = None
+    if is_reel_day():
+        video_rel = f"{IMAGES_DIR}/{name[:-4]}.mp4"
+        try:
+            make_reel(data["headline"], data["subtext"], ROOT / video_rel, photo=photo)
+        except (RuntimeError, OSError, subprocess.SubprocessError, KeyError) as e:
+            print(f"::warning::リール動画を作れなかったので、静止画で投稿します: {e}")
+            video_rel = None
+
     STATE.parent.mkdir(parents=True, exist_ok=True)
     STATE.write_text(
         json.dumps(
             {
                 "memo": memo, "theme": theme, "caption": data["caption"],
-                "image": image_rel, "google_image": google_rel,
+                "image": image_rel, "google_image": google_rel, "video": video_rel,
             },
             ensure_ascii=False, indent=2,
         ),
@@ -410,9 +507,12 @@ def prepare():
     print(f"画像: {image_rel}")
     if google_rel:
         print(f"Google用の画像: {google_rel}")
+    if video_rel:
+        print(f"リール動画: {video_rel}")
     set_output("has_post", "true")
     set_output("image_path", image_rel)
     set_output("google_image_path", google_rel or "")
+    set_output("video_path", video_rel or "")
 
 
 # ---------- publish ----------
@@ -487,28 +587,20 @@ def publish_google(state):
         print(f"::warning::Googleビジネスプロフィールへの投稿に失敗しました: {e}")
 
 
-def publish():
-    state = json.loads(STATE.read_text(encoding="utf-8"))
-    token = os.environ["IG_ACCESS_TOKEN"]
-    user_id = os.environ["IG_USER_ID"]
-    repo = os.environ["GITHUB_REPOSITORY"]
-    branch = os.environ.get("GITHUB_REF_NAME", "main")
-    image_url = f"https://raw.githubusercontent.com/{repo}/{branch}/{state['image']}"
-
-    wait_for_image(image_url)
-
+def ig_publish(token, user_id, media_params, tries):
+    """Instagramに、画像またはリールを1つ投稿する。失敗したら sys.exit で止まる。"""
     # (1) 投稿の下書き(コンテナ)を作る
     r = requests.post(
         f"{IG_API}/{user_id}/media",
-        data={"image_url": image_url, "caption": state["caption"], "access_token": token},
+        data={**media_params, "access_token": token},
         timeout=60,
     )
     if r.status_code != 200:
         fail("投稿の準備", r)
     creation_id = r.json()["id"]
 
-    # (2) 準備が終わるまで待つ
-    for _ in range(30):
+    # (2) 準備が終わるまで待つ(動画は画像より時間がかかる)
+    for _ in range(tries):
         r = requests.get(
             f"{IG_API}/{creation_id}",
             params={"fields": "status_code", "access_token": token},
@@ -520,7 +612,7 @@ def publish():
         if status == "FINISHED":
             break
         if status in ("ERROR", "EXPIRED"):
-            sys.exit(f"[エラー] Instagramが画像を受け付けませんでした: {r.text}")
+            sys.exit(f"[エラー] Instagramが投稿を受け付けませんでした: {r.text}")
         time.sleep(5)
     else:
         sys.exit("[エラー] 準備が終わりませんでした(時間切れ)")
@@ -534,6 +626,33 @@ def publish():
     if r.status_code != 200:
         fail("公開", r)
     print(f"投稿しました: {r.json()}")
+
+
+def publish():
+    state = json.loads(STATE.read_text(encoding="utf-8"))
+    token = os.environ["IG_ACCESS_TOKEN"]
+    user_id = os.environ["IG_USER_ID"]
+    repo = os.environ["GITHUB_REPOSITORY"]
+    branch = os.environ.get("GITHUB_REF_NAME", "main")
+    base_url = f"https://raw.githubusercontent.com/{repo}/{branch}"
+
+    published = False
+    if state.get("video"):
+        # リールの日。動画の投稿に失敗したら、静止画で投稿し直す(その日の投稿を落とさないため)
+        try:
+            video_url = f"{base_url}/{state['video']}"
+            wait_for_image(video_url)
+            ig_publish(token, user_id, {
+                "media_type": "REELS", "video_url": video_url,
+                "caption": state["caption"], "share_to_feed": "true",
+            }, tries=60)
+            published = True
+        except SystemExit as e:
+            print(f"::warning::リールの投稿に失敗したので、静止画で投稿します: {e}")
+    if not published:
+        image_url = f"{base_url}/{state['image']}"
+        wait_for_image(image_url)
+        ig_publish(token, user_id, {"image_url": image_url, "caption": state["caption"]}, tries=30)
 
     if state.get("memo"):
         # 使ったメモを、memos.txt から posted.txt へ移す
