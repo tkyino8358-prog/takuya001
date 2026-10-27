@@ -393,7 +393,11 @@ def make_reel(headline, subtext, out_path, photo=None, music=None):
     music は音楽ファイル(省くと music フォルダから選ぶ。なければ無音)。"""
     ffmpeg = os.environ.get("FFMPEG") or shutil.which("ffmpeg")
     if not ffmpeg:
-        raise RuntimeError("ffmpeg が見つかりません")
+        try:
+            import imageio_ffmpeg  # pip で入る、ffmpeg 入りの部品
+            ffmpeg = imageio_ffmpeg.get_ffmpeg_exe()
+        except ImportError:
+            raise RuntimeError("ffmpeg が見つかりません")
     music = music or pick_music()
     # リールは上下をInstagramの表示が隠すので、文字は少し内側に置く
     overlay = tuple(CONFIG.get("reel_overlay", (0.40, 0.05)))  # 静止画より薄い(明るい)
