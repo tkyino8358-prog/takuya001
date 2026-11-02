@@ -255,12 +255,26 @@ def wrap(text, font, max_width):
     return lines
 
 
+BG_HISTORY = ROOT / IMAGES_DIR / "bg_history.txt"  # 使った写真の記録(images と一緒にGitHubへ保存される)
+BG_AVOID_RECENT = 10  # 直近これだけの回数に使った写真は避ける
+BG_HISTORY_KEEP = 30
+
+
 def pick_background():
-    """backgrounds フォルダの写真から1枚選ぶ。なければ None。"""
+    """backgrounds フォルダの写真から1枚選ぶ。直近に使った写真は避ける。なければ None。"""
     if not BACKGROUNDS.exists():
         return None
     files = sorted(p for p in BACKGROUNDS.iterdir() if p.suffix.lower() in BACKGROUND_EXTS)
-    return random.choice(files) if files else None
+    if not files:
+        return None
+    history = BG_HISTORY.read_text(encoding="utf-8").splitlines() if BG_HISTORY.exists() else []  # 名前に空白があっても崩れないよう行ごと
+    # 写真が少ないときは、避ける数を減らして、選べる写真が必ず残るようにする
+    avoid = min(BG_AVOID_RECENT, len(files) - 1)
+    recent = set(history[-avoid:]) if avoid > 0 else set()
+    choice = random.choice([p for p in files if p.name not in recent] or files)
+    BG_HISTORY.parent.mkdir(parents=True, exist_ok=True)
+    BG_HISTORY.write_text("\n".join((history + [choice.name])[-BG_HISTORY_KEEP:]) + "\n", encoding="utf-8")
+    return choice
 
 
 def photo_background(path, width, height, overlay=None):
