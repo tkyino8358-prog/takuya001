@@ -5,7 +5,7 @@
   "size": [1080, 1350],
   "gradient": ["#B45309", "#F59E0B"],
   "use_themes": true,
-  "alternate": true,
+  "alternate": false,
   "overlay_top": 0.15,
   "overlay_bottom": 0.0,
   "text_shadow": true,
