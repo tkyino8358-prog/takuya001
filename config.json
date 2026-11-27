@@ -2,6 +2,11 @@
   "model": "claude-sonnet-5-5",
   "footer": "学習塾グリーンエイジ 高崎中居校",
   "size": [1080, 1350],
+  "reel_weekdays": [0, 1, 2, 3, 4, 5, 6],
+  "reel_overlay": [0.15, 0.0],
+  "overlay_top": 0.15,
+  "overlay_bottom": 0.0,
+  "text_shadow": true,
   "gradient": ["#0F3D3E", "#1F8A70"],
   "text_color": "#FFFFFF",
   "sub_color": "#D9F2E6"

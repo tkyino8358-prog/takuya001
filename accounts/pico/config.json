@@ -6,6 +6,8 @@
   "gradient": ["#B45309", "#F59E0B"],
   "use_themes": true,
   "alternate": false,
+  "reel_weekdays": [0, 1, 2, 3, 4, 5, 6],
+  "reel_overlay": [0.15, 0.0],
   "overlay_top": 0.15,
   "overlay_bottom": 0.0,
   "text_shadow": true,
